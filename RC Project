@@ -50,7 +50,7 @@ Servo myServo;
 Audio audio;
 #define I2S_LRC 25
 #define I2S_BCLK 26
-#define I2S_DIN 27
+#define I2S_DIN 22
 
 // ===ENGINE=== //
 bool engineOn = false;
