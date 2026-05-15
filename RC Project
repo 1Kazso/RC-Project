@@ -1,0 +1,471 @@
+#include <Bluepad32.h>
+#include <Audio.h>
+#include <LittleFS.h>
+#include <ESP32Servo.h>
+
+
+// ===PIN CONNECTIONS=== //
+const int headLights = 21;
+const int brakeLights = 5;
+const int yellowLeft = 19;
+const int yellowRight = 18;
+
+// ===MOTOR=== //
+int ENApin = 13;
+int IN1pin = 12;
+int IN2pin = 14;
+int currentSpeed = 0;
+int motorSpeed = 0;
+
+
+// ===SERVO=== //
+int servoPin = 4;
+Servo myServo;
+
+// ===AUDIO=== //
+Audio audio;
+#define I2S_LRC 25
+#define I2S_BCLK 26
+#define I2S_DIN 27
+
+// ===ENGINE=== //
+bool engineOn = false;
+bool engineSound = false;
+bool startupRunning = false;
+bool drivingSound = false;
+bool reverseSound = false;
+bool idleSound = false;
+bool revSound = false;
+bool indicatorSound = false;
+
+//===LIGHTS===//
+bool headLightsOn = false;
+bool leftIndicator = false;
+bool rightIndicator = false;
+bool hazardIndicator = false;
+bool indicatorLoop = false;
+bool highBeam = false;
+
+// ===BUTTONS=== //
+bool lastY = false;
+bool lastRB = false;
+bool lastLB = false;
+bool lastStartBtn = false;
+bool lastHorn = false;
+bool lastHeadlightsBtn = false;
+bool lastRev = false;
+bool lastHighBeam = false;
+
+
+// bool lastUnderglow = false;
+
+unsigned long previousMillis = 0;
+const long blinkInterval = 500;
+bool blinkState = false;
+
+ControllerPtr myControllers[BP32_MAX_GAMEPADS];
+
+// This callback gets called any time a new gamepad is connected.
+// Up to 4 gamepads can be connected at the same time.
+void onConnectedController(ControllerPtr ctl) {
+  bool foundEmptySlot = false;
+  for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
+    if (myControllers[i] == nullptr) {
+      Serial.printf("CALLBACK: Controller is connected, index=%d\n", i);
+      // Additionally, you can get certain gamepad properties like:
+      // Model, VID, PID, BTAddr, flags, etc.
+      ControllerProperties properties = ctl->getProperties();
+
+      Serial.printf(
+        "Controller model: %s, VID=0x%04x, PID=0x%04x\n",
+        ctl->getModelName().c_str(),
+        properties.vendor_id,
+        properties.product_id);
+
+
+      Serial.printf("YOUR CONTROLLER MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                    properties.btaddr[0], properties.btaddr[1], properties.btaddr[2],
+                    properties.btaddr[3], properties.btaddr[4], properties.btaddr[5]);
+
+      myControllers[i] = ctl;
+      foundEmptySlot = true;
+      BP32.enableNewBluetoothConnections(false);
+
+      ctl->playDualRumble(0, 500, 255, 255);
+
+
+      break;
+    }
+  }
+
+  if (!foundEmptySlot) {
+    Serial.println("CALLBACK: Controller connected, but could not found empty slot");
+  }
+}
+
+void onDisconnectedController(ControllerPtr ctl) {
+  bool foundController = false;
+
+  for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
+    if (myControllers[i] == ctl) {
+      Serial.printf("CALLBACK: Controller disconnected from index=%d\n", i);
+      myControllers[i] = nullptr;
+      foundController = true;
+      break;
+    }
+  }
+
+  if (!foundController) {
+    Serial.println("CALLBACK: Controller disconnected, but not found in myControllers");
+  }
+}
+
+// ========= SEE CONTROLLER VALUES IN SERIAL MONITOR ========= //
+
+void dumpGamepad(ControllerPtr ctl) {
+  Serial.printf(
+    "idx=%d, dpad: 0x%02x, buttons: 0x%04x, axis L: %4d, %4d, axis R: %4d, %4d, brake: %4d, throttle: %4d, "
+    "misc: 0x%02x, gyro x:%6d y:%6d z:%6d, accel x:%6d y:%6d z:%6d\n",
+    ctl->index(),        // Controller Index
+    ctl->dpad(),         // D-pad
+    ctl->buttons(),      // bitmask of pressed buttons
+    ctl->axisX(),        // (-511 - 512) left X Axis
+    ctl->axisY(),        // (-511 - 512) left Y axis
+    ctl->axisRX(),       // (-511 - 512) right X axis
+    ctl->axisRY(),       // (-511 - 512) right Y axis
+    ctl->brake(),        // (0 - 1023): brake button
+    ctl->throttle(),     // (0 - 1023): throttle (AKA gas) button
+    ctl->miscButtons(),  // bitmask of pressed "misc" buttons
+    ctl->gyroX(),        // Gyro X
+    ctl->gyroY(),        // Gyro Y
+    ctl->gyroZ(),        // Gyro Z
+    ctl->accelX(),       // Accelerometer X
+    ctl->accelY(),       // Accelerometer Y
+    ctl->accelZ()        // Accelerometer Z
+  );
+}
+
+// ========= GAME CONTROLLER ACTIONS SECTION ========= //
+
+void processGamepad(ControllerPtr ctl) {
+  // === VARIABLES === //
+  uint16_t btn = ctl->buttons();
+  uint16_t misc = ctl->miscButtons();
+  uint16_t dpad = ctl->dpad();
+
+  bool hornBtn = ctl->b();
+  bool Y = btn & 0x0008;
+  bool RB = btn & 0x0020;
+  bool LB = btn & 0x0010;
+  bool headlightsBtn = btn & 0x0004;
+  bool startBtn = misc & 0x04;
+  bool revBtn = btn & 0x0001;
+  // bool underglowBtn = dpad & 0x08;
+  bool highbeamBtn = dpad & 0x04;
+
+  int throttle = ctl->throttle();
+  int brake = ctl->brake();
+
+
+  if (startupRunning) return;
+
+  // ===ENGINE ON and OFF=== //
+  if (startBtn && !lastStartBtn) {
+    engineOn = !engineOn;
+
+    if (engineOn) {
+
+      startupRunning = true;
+      ctl->playDualRumble(0, 500, 255, 255);
+      audio.connecttoFS(LittleFS, "/startup.mp3");
+
+      headLightsOn = true;
+      digitalWrite(headLights, HIGH);
+
+
+      previousMillis = millis();
+    } else {
+      audio.stopSong();
+      ctl->playDualRumble(0, 500, 255, 255);
+      audio.connecttoFS(LittleFS, "/engineoff.mp3");
+
+      analogWrite(brakeLights, LOW);
+
+      headLightsOn = false;
+      idleSound = false;
+      drivingSound = false;
+      indicatorSound = false;
+      engineSound = false;
+      reverseSound = false;
+      revSound = false;
+      leftIndicator = false;
+      rightIndicator = false;
+      hazardIndicator = false;
+    }
+  }
+  lastStartBtn = startBtn;
+
+  // ===HEADLIGHTS ON=== //
+  if (headlightsBtn && !lastHeadlightsBtn && engineOn) {
+    headLightsOn = !headLightsOn;
+  }
+  lastHeadlightsBtn = headlightsBtn;
+
+  // ===LOW/HIGH BEAM===//
+  if (highbeamBtn && !lastHighBeam && engineOn) {
+    highBeam = !highBeam;
+  }
+  lastHighBeam = highbeamBtn;
+
+  //===BEAM ON/OFF===//
+  if (engineOn) {
+    if (highBeam) {
+      analogWrite(headLights, 255);
+    } else {
+      analogWrite(headLights, 100);
+    }
+  } else {
+    analogWrite(headLights, 0);
+  }
+
+  // ===INDICATORS=== //
+  if (Y && !lastY && engineOn) {
+
+
+    hazardIndicator = !hazardIndicator;
+    leftIndicator = false;
+    rightIndicator = false;
+
+    indicatorLoop = hazardIndicator;
+
+    if (indicatorLoop) {
+      audio.connecttoFS(LittleFS, "/indicator.mp3");
+    }
+  }
+  lastY = Y;
+
+  if (RB && !lastRB && engineOn) {
+    rightIndicator = !rightIndicator;
+    leftIndicator = false;
+    hazardIndicator = false;
+
+    indicatorLoop = rightIndicator;
+    if (indicatorLoop) {
+      audio.connecttoFS(LittleFS, "/indicator.mp3");
+    }
+  }
+  lastRB = RB;
+
+  if (LB && !lastLB) {
+    leftIndicator = !leftIndicator;
+    rightIndicator = false;
+    hazardIndicator = false;
+
+    indicatorLoop = leftIndicator;
+    if (indicatorLoop) {
+      audio.connecttoFS(LittleFS, "/indicator.mp3");
+    }
+  }
+  lastLB = LB;
+
+  // ===HORN=== //
+  if (hornBtn && !lastHorn) {
+    audio.connecttoFS(LittleFS, "/horn.mp3");
+  }
+  lastHorn = hornBtn;
+
+  // ===BRAKE LIGHTS=== //
+  // digitalWrite(brakeLights, brake > 70);
+
+
+  // === DRIVING === //
+  // Deadzone is 70
+  if (throttle > 70 && engineOn) {
+    if (!drivingSound && engineOn && !indicatorLoop) {
+
+      audio.stopSong();
+      audio.connecttoFS(LittleFS, "/driving.mp3");
+
+      drivingSound = true;
+      idleSound = false;
+      indicatorSound = false;
+      engineSound = false;
+      reverseSound = false;
+      revSound = false;
+    }
+    
+    motorSpeed = map(throttle, 300, 1023, 0, 255);
+
+     digitalWrite(IN1pin, HIGH);
+    digitalWrite(IN2pin, LOW);
+
+    analogWrite(brakeLights, LOW);
+
+
+  } else if (brake > 70 && engineOn) {
+    if (!reverseSound && engineOn && !indicatorLoop) {
+
+      audio.stopSong();
+      audio.connecttoFS(LittleFS, "/reverse.mp3");
+
+      reverseSound = true;
+      drivingSound = false;
+      idleSound = false;
+      indicatorSound = false;
+      engineSound = false;
+      revSound = false;
+    }
+    motorSpeed = map(brake, 300, 1023, 0, 255);
+
+     digitalWrite(IN1pin, LOW);
+    digitalWrite(IN2pin, HIGH);
+
+    analogWrite(brakeLights, 255);
+
+  } else {
+
+    if (!idleSound && !revSound && !indicatorSound && engineOn && !indicatorLoop) {
+
+      audio.stopSong();
+      audio.connecttoFS(LittleFS, "/idle.mp3");
+
+      idleSound = true;
+      drivingSound = false;
+      indicatorSound = false;
+      engineSound = false;
+      reverseSound = false;
+      revSound = false;
+    }
+    motorSpeed = 0;
+    digitalWrite(IN1pin, LOW);
+    digitalWrite(IN2pin, LOW);
+  }
+
+  //===REV SOUND===//
+  if (revBtn && !lastRev && engineOn) {
+
+    if (!revSound && engineOn) {
+      audio.stopSong();
+      audio.connecttoFS(LittleFS, "/rev.mp3");
+
+      revSound = true;
+      idleSound = false;
+      indicatorSound = false;
+      drivingSound = false;
+      engineSound = false;
+      reverseSound = false;
+    }
+  }
+  lastRev = revBtn;
+
+  // ===ACCELERATION=== //
+  if (currentSpeed < motorSpeed) currentSpeed += 4;
+  if (currentSpeed > motorSpeed) currentSpeed -= 5;
+
+  currentSpeed = constrain(currentSpeed, 0, 255);
+
+ analogWrite(ENApin, currentSpeed);
+  
+  // ===STEERING=== //
+  int x = ctl->axisX();
+
+  // Deadzone
+  if (abs(x) < 30) x = 0;
+
+  // Map joystick to servo angle
+  int steer = map(x, -512, 512, 0, 180);
+
+  myServo.write(steer);
+
+  // ====BLINKERS==== //
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - previousMillis >= blinkInterval) {
+    previousMillis = currentMillis;
+    blinkState = !blinkState;
+  }
+  if (hazardIndicator) {
+    digitalWrite(yellowLeft, blinkState);
+    digitalWrite(yellowRight, blinkState);
+  } else if (leftIndicator) {
+    digitalWrite(yellowLeft, blinkState);
+    digitalWrite(yellowRight, LOW);
+  } else if (rightIndicator) {
+    digitalWrite(yellowRight, blinkState);
+    digitalWrite(yellowLeft, LOW);
+  } else {
+    digitalWrite(yellowLeft, LOW);
+    digitalWrite(yellowRight, LOW);
+  }
+
+  if (!leftIndicator && !rightIndicator && !hazardIndicator) {
+    indicatorLoop = false;
+  }
+
+  // dumpGamepad(ctl);
+}
+
+void processControllers() {
+  for (auto myController : myControllers) {
+    if (myController && myController->isConnected() && myController->hasData()) {
+      if (myController->isGamepad()) {
+        processGamepad(myController);
+      } else {
+        Serial.println("Unsupported controller");
+      }
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(ENApin, OUTPUT);
+  pinMode(IN1pin, OUTPUT);
+  pinMode(IN2pin, OUTPUT);
+
+  pinMode(brakeLights, OUTPUT);
+  pinMode(headLights, OUTPUT);
+  pinMode(yellowRight, OUTPUT);
+  pinMode(yellowLeft, OUTPUT);
+
+  myServo.setPeriodHertz(50);
+  myServo.attach(servoPin, 1000, 2000);
+
+  LittleFS.begin(true);
+
+  audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DIN);
+  audio.setVolume(20);  //(Volume 0-21)
+
+
+  Serial.printf("Firmware: %s\n", BP32.firmwareVersion());
+  const uint8_t* addr = BP32.localBdAddress();
+  Serial.printf("BD Addr: %2X:%2X:%2X:%2X:%2X:%2X\n", addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+  BP32.setup(&onConnectedController, &onDisconnectedController);
+  BP32.enableVirtualDevice(false);
+}
+void loop() {
+  BP32.update();
+  processControllers();
+
+  audio.loop();
+
+  if (indicatorLoop && !audio.isRunning()) {
+    audio.connecttoFS(LittleFS, "/indicator.mp3");
+  }
+
+  if (startupRunning && !audio.isRunning()) {
+    revSound = false;
+    indicatorSound = false;
+    startupRunning = false;
+  }
+
+  if (startupRunning && millis() - previousMillis > 1500) {
+    digitalWrite(yellowLeft, LOW);
+    digitalWrite(yellowRight, LOW);
+    digitalWrite(brakeLights, LOW);
+
+    startupRunning = false;
+  }
+  vTaskDelay(1);
+}
