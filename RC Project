@@ -17,6 +17,30 @@ int IN2pin = 14;
 int currentSpeed = 0;
 int motorSpeed = 0;
 
+// ===GEAR=== //
+int currentGear = 1;
+const int maxGear = 3;
+
+int gearLimit[] = {
+  0,
+  150,
+  200,
+  255
+};
+
+int accelRate[] = {
+  0,
+  8,
+  5,
+  3
+};
+
+int brakeRate[] = {
+  0,
+  10,
+  6,
+  4
+};
 
 // ===SERVO=== //
 int servoPin = 4;
@@ -55,6 +79,8 @@ bool lastHorn = false;
 bool lastHeadlightsBtn = false;
 bool lastRev = false;
 bool lastHighBeam = false;
+bool lastGearUp = false;
+bool lastGearDown = false;
 
 
 // bool lastUnderglow = false;
@@ -162,6 +188,8 @@ void processGamepad(ControllerPtr ctl) {
   bool revBtn = btn & 0x0001;
   // bool underglowBtn = dpad & 0x08;
   bool highbeamBtn = dpad & 0x04;
+  bool gearupBtn = dpad & 0x01;
+  bool geardownBtn = dpad & 0x02;
 
   int throttle = ctl->throttle();
   int brake = ctl->brake();
@@ -277,9 +305,23 @@ void processGamepad(ControllerPtr ctl) {
   // ===BRAKE LIGHTS=== //
   // digitalWrite(brakeLights, brake > 70);
 
+  // ===GEAR SHIFT=== //
+  if (gearupBtn && engineOn && !lastGearUp && currentGear < maxGear) {
+    currentGear++;
+    audio.connecttoFS(LittleFS, "/gear.mp3");
+  }
+  if (geardownBtn && engineOn && !lastGearDown && currentGear > 1) {
+    currentGear--;
+    audio.connecttoFS(LittleFS, "/gear.mp3");
+  }
+  lastGearUp = gearupBtn;
+  lastGearDown = geardownBtn;
+
 
   // === DRIVING === //
   // Deadzone is 70
+  int speedLimit = gearLimit[currentGear];
+
   if (throttle > 70 && engineOn) {
     if (!drivingSound && engineOn && !indicatorLoop) {
 
@@ -293,10 +335,11 @@ void processGamepad(ControllerPtr ctl) {
       reverseSound = false;
       revSound = false;
     }
-    
-    motorSpeed = map(throttle, 300, 1023, 0, 255);
 
-     digitalWrite(IN1pin, HIGH);
+    motorSpeed = map(throttle, 300, 1023, 100, speedLimit);
+    motorSpeed = constrain(motorSpeed, 0, speedLimit);
+
+    digitalWrite(IN1pin, HIGH);
     digitalWrite(IN2pin, LOW);
 
     analogWrite(brakeLights, LOW);
@@ -315,9 +358,10 @@ void processGamepad(ControllerPtr ctl) {
       engineSound = false;
       revSound = false;
     }
-    motorSpeed = map(brake, 300, 1023, 0, 255);
+    motorSpeed = map(brake, 300, 1023, 0, speedLimit);
+    motorSpeed = constrain(motorSpeed, 0, speedLimit);
 
-     digitalWrite(IN1pin, LOW);
+    digitalWrite(IN1pin, LOW);
     digitalWrite(IN2pin, HIGH);
 
     analogWrite(brakeLights, 255);
@@ -341,6 +385,27 @@ void processGamepad(ControllerPtr ctl) {
     digitalWrite(IN2pin, LOW);
   }
 
+  // ===ACCELERATION=== //
+  if (currentSpeed < motorSpeed) {
+    currentSpeed += accelRate[currentGear];
+
+    if (currentSpeed < motorSpeed)
+      currentSpeed = motorSpeed;
+  }
+
+
+  if (currentSpeed > motorSpeed) {
+    currentSpeed -= brakeRate[currentGear];
+
+    if (currentSpeed < motorSpeed)
+      currentSpeed = motorSpeed;
+  }
+
+
+  currentSpeed = constrain(currentSpeed, 0, 255);
+
+  analogWrite(ENApin, currentSpeed);
+
   //===REV SOUND===//
   if (revBtn && !lastRev && engineOn) {
 
@@ -358,14 +423,7 @@ void processGamepad(ControllerPtr ctl) {
   }
   lastRev = revBtn;
 
-  // ===ACCELERATION=== //
-  if (currentSpeed < motorSpeed) currentSpeed += 4;
-  if (currentSpeed > motorSpeed) currentSpeed -= 5;
 
-  currentSpeed = constrain(currentSpeed, 0, 255);
-
- analogWrite(ENApin, currentSpeed);
-  
   // ===STEERING=== //
   int x = ctl->axisX();
 
