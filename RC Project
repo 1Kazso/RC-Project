@@ -23,7 +23,7 @@ const int maxGear = 3;
 
 int gearLimit[] = {
   0,
-  150,
+  170,
   200,
   255
 };
@@ -81,9 +81,6 @@ bool lastRev = false;
 bool lastHighBeam = false;
 bool lastGearUp = false;
 bool lastGearDown = false;
-
-
-// bool lastUnderglow = false;
 
 unsigned long previousMillis = 0;
 const long blinkInterval = 500;
@@ -178,6 +175,8 @@ void processGamepad(ControllerPtr ctl) {
   uint16_t btn = ctl->buttons();
   uint16_t misc = ctl->miscButtons();
   uint16_t dpad = ctl->dpad();
+  int throttle = ctl->throttle();
+  int brake = ctl->brake();
 
   bool hornBtn = ctl->b();
   bool Y = btn & 0x0008;
@@ -186,13 +185,10 @@ void processGamepad(ControllerPtr ctl) {
   bool headlightsBtn = btn & 0x0004;
   bool startBtn = misc & 0x04;
   bool revBtn = btn & 0x0001;
-  // bool underglowBtn = dpad & 0x08;
   bool highbeamBtn = dpad & 0x04;
   bool gearupBtn = dpad & 0x01;
   bool geardownBtn = dpad & 0x02;
 
-  int throttle = ctl->throttle();
-  int brake = ctl->brake();
 
 
   if (startupRunning) return;
@@ -208,7 +204,6 @@ void processGamepad(ControllerPtr ctl) {
       audio.connecttoFS(LittleFS, "/startup.mp3");
 
       headLightsOn = true;
-      digitalWrite(headLights, HIGH);
 
 
       previousMillis = millis();
@@ -246,11 +241,11 @@ void processGamepad(ControllerPtr ctl) {
   lastHighBeam = highbeamBtn;
 
   //===BEAM ON/OFF===//
-  if (engineOn) {
+  if (engineOn && headLightsOn) {
     if (highBeam) {
       analogWrite(headLights, 255);
     } else {
-      analogWrite(headLights, 100);
+      analogWrite(headLights, 75);
     }
   } else {
     analogWrite(headLights, 0);
@@ -302,9 +297,6 @@ void processGamepad(ControllerPtr ctl) {
   }
   lastHorn = hornBtn;
 
-  // ===BRAKE LIGHTS=== //
-  // digitalWrite(brakeLights, brake > 70);
-
   // ===GEAR SHIFT=== //
   if (gearupBtn && engineOn && !lastGearUp && currentGear < maxGear) {
     currentGear++;
@@ -319,7 +311,6 @@ void processGamepad(ControllerPtr ctl) {
 
 
   // === DRIVING === //
-  // Deadzone is 70
   int speedLimit = gearLimit[currentGear];
 
   if (throttle > 70 && engineOn) {
@@ -336,7 +327,7 @@ void processGamepad(ControllerPtr ctl) {
       revSound = false;
     }
 
-    motorSpeed = map(throttle, 300, 1023, 100, speedLimit);
+    motorSpeed = map(throttle, 300, 1023, 150, speedLimit);
     motorSpeed = constrain(motorSpeed, 0, speedLimit);
 
     digitalWrite(IN1pin, HIGH);
@@ -358,7 +349,7 @@ void processGamepad(ControllerPtr ctl) {
       engineSound = false;
       revSound = false;
     }
-    motorSpeed = map(brake, 300, 1023, 0, speedLimit);
+    motorSpeed = map(brake, 300, 1023, 150, speedLimit);
     motorSpeed = constrain(motorSpeed, 0, speedLimit);
 
     digitalWrite(IN1pin, LOW);
@@ -389,7 +380,7 @@ void processGamepad(ControllerPtr ctl) {
   if (currentSpeed < motorSpeed) {
     currentSpeed += accelRate[currentGear];
 
-    if (currentSpeed < motorSpeed)
+    if (currentSpeed > motorSpeed)
       currentSpeed = motorSpeed;
   }
 
